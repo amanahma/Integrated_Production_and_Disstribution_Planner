@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 import os
 import pickle
+import subprocess
+import sys
 
 import folium
 import pandas as pd
@@ -27,13 +29,39 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Cache path ─────────────────────────────────────────────────────────────────
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+_CACHE_PATH = os.path.join(_ROOT, "data", "processed", "dashboard_cache.pkl")
+_PRECOMPUTE = os.path.join(_ROOT, "src", "precompute.py")
+
+# ── First-time cache build (runs automatically on fresh deploy) ────────────────
+if not os.path.exists(_CACHE_PATH):
+    with st.spinner(
+        "First-time setup: running the optimisation pipeline. "
+        "This takes ~2 minutes on a fast CPU and may take longer on shared "
+        "cloud infrastructure. Please wait..."
+    ):
+        try:
+            subprocess.run(
+                [sys.executable, _PRECOMPUTE],
+                check=True,
+                timeout=600,  # 10-minute hard ceiling for slow shared CPU
+            )
+        except subprocess.CalledProcessError as exc:
+            st.error(
+                f"precompute.py exited with code {exc.returncode}. "
+                "Check the app logs (☰ → Manage app → Logs) for details."
+            )
+            st.stop()
+        except subprocess.TimeoutExpired:
+            st.error(
+                "Optimisation pipeline exceeded the 10-minute timeout. "
+                "This can happen on heavily-loaded shared infrastructure. "
+                "Redeploying usually resolves it."
+            )
+            st.stop()
+
 # ── Cache load ─────────────────────────────────────────────────────────────────
-_CACHE_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "data", "processed", "dashboard_cache.pkl",
-)
-
-
 @st.cache_data
 def _load_cache() -> dict:
     with open(_CACHE_PATH, "rb") as fh:
@@ -44,7 +72,8 @@ try:
     C = _load_cache()
 except FileNotFoundError:
     st.error(
-        "Cache not found. Run `python src/precompute.py` first, then relaunch."
+        "dashboard_cache.pkl was not found even after precompute ran. "
+        "Check the app logs for precompute errors."
     )
     st.stop()
 
