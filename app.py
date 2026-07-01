@@ -10,6 +10,7 @@ Then launch:
 
 from __future__ import annotations
 
+import math
 import os
 import pickle
 
@@ -232,7 +233,7 @@ elif page == "Production Plan":
         y=demand_vals,
         name="Demand",
         marker_color="#d62728",
-        opacity=0.6,
+        opacity=0.55,
     )
     fig_period.add_bar(
         x=periods,
@@ -241,16 +242,85 @@ elif page == "Production Plan":
         marker_color="#1f77b4",
         opacity=0.8,
     )
+
+    if view == "MILP Optimized":
+        inv_vals = [C.get("milp_inventory_period", {}).get(p, 0.0) for p in periods]
+        fig_period.add_scatter(
+            x=periods,
+            y=inv_vals,
+            name="Inventory held (end of period)",
+            mode="lines+markers",
+            line=dict(color="#ff7f0e", width=2.5, dash="dot"),
+            marker=dict(size=7, symbol="diamond"),
+            yaxis="y2",
+        )
+        fig_period.update_layout(
+            yaxis2=dict(
+                title="Inventory (units)",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                rangemode="tozero",
+            )
+        )
     fig_period.update_layout(
         barmode="overlay",
         xaxis_title="Period",
         yaxis_title="Units",
-        legend=dict(orientation="h", y=1.05),
-        height=380,
+        legend=dict(orientation="h", y=1.08),
+        height=440,
     )
     st.plotly_chart(fig_period, use_container_width=True)
 
-    if view == "Baseline (lot-for-lot)":
+    if view == "MILP Optimized":
+        st.caption(
+            "Demand exceeding that period's raw production is covered by inventory "
+            "pre-built in earlier periods — total shortage across the horizon is "
+            "0 units (see Operational KPIs)."
+        )
+        st.info(
+            "**P12 production drop — why this is correct:** The MILP reduces P12 "
+            "production to 144k units (vs ~500k average) because there is no "
+            "ending-inventory requirement. Drawing down the 313k-unit buffer "
+            "accumulated through P11 is strictly cheaper than over-producing in "
+            "the final period. This is optimal solver behaviour, not a shortfall.",
+            icon="ℹ️",
+        )
+
+        # ── Secondary demand chart: zoomed y-axis to reveal tent shape ─────────
+        st.markdown("**Demand shape (zoomed view — y-axis 400k–580k)**")
+        st.caption(
+            "Same demand data as above, y-axis clipped to 400k–580k to make the "
+            "tent shape (rising to P07 peak, falling symmetrically) visible."
+        )
+        fig_demand_zoom = go.Figure()
+        fig_demand_zoom.add_bar(
+            x=periods,
+            y=demand_vals,
+            name="Demand",
+            marker_color="#d62728",
+            opacity=0.75,
+        )
+        fig_demand_zoom.add_annotation(
+            x="P07",
+            y=max(demand_vals),
+            text="Peak",
+            showarrow=True,
+            arrowhead=2,
+            ax=0,
+            ay=-30,
+            font=dict(size=10, color="#d62728"),
+        )
+        fig_demand_zoom.update_layout(
+            yaxis=dict(range=[400_000, 580_000], title="Units"),
+            xaxis_title="Period",
+            height=220,
+            margin=dict(t=10, b=40),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_demand_zoom, use_container_width=True)
+
+    elif view == "Baseline (lot-for-lot)":
         st.caption(
             "Baseline produces exactly what demand requires each period (lot-for-lot). "
             "No inventory is held; production = demand bar-for-bar."
@@ -419,17 +489,28 @@ elif page == "Network Map":
     # Flow lines
     if map_mode == "Optimized (LP flows)":
         flows = C["opt_flows"]
-        max_flow = max(flows.values()) if flows else 1.0
-        for (plant, region), qty in flows.items():
+        # Log-normalise so cross-plant flows (10–20% of dominant local flow) remain
+        # visible. Raw sqrt normalisation buries them at 2–4 px on a busy basemap.
+        log_vals = {k: math.log1p(v) for k, v in flows.items()}
+        log_min = min(log_vals.values())
+        log_max = max(log_vals.values())
+        log_span = log_max - log_min if log_max > log_min else 1.0
+
+        for (plant, region), qty in sorted(flows.items(), key=lambda x: x[1]):
             if plant not in coords or region not in coords:
                 continue
-            weight = 1.5 + 7.0 * (qty / max_flow) ** 0.5
+            norm = (log_vals[(plant, region)] - log_min) / log_span  # 0..1
+            weight = 2.5 + 7.5 * norm  # 2.5 px floor .. 10 px ceiling
+            # Green for local (plant's own city = region), orange for cross-plant
+            is_local = (plant_city.get(plant) == region)
+            color = "#2ca02c" if is_local else "#e6550d"
+            tag = "local" if is_local else "cross-plant"
             folium.PolyLine(
                 [list(coords[plant]), list(coords[region])],
-                color="#2ca02c",
+                color=color,
                 weight=weight,
-                opacity=0.65,
-                tooltip=f"{plant_city.get(plant, plant)} → {region}: {qty:,.0f} units",
+                opacity=0.80,
+                tooltip=f"{plant_city.get(plant, plant)} -> {region}: {qty:,.0f} units ({tag})",
             ).add_to(m)
     else:
         baseline_source = C["baseline_source"]
@@ -456,7 +537,9 @@ elif page == "Network Map":
         "<span style='color:green'>●</span> Plant &nbsp;&nbsp;"
         "<span style='color:steelblue'>●</span> Distribution centre &nbsp;&nbsp;"
         "<span style='color:tomato'>●</span> Demand region &nbsp;&nbsp;"
-        "Line width ∝ √(flow volume)",
+        "<span style='color:#2ca02c'>&#9135;</span> Local flow &nbsp;&nbsp;"
+        "<span style='color:#e6550d'>&#9135;</span> Cross-plant flow &nbsp;&nbsp;"
+        "Line width = log-normalised volume",
         unsafe_allow_html=True,
     )
 

@@ -99,6 +99,12 @@ def main() -> None:
         "target_interval": params.meta.get("target_reorder_interval", 3),
     }
 
+    # Per-period total inventory held (sum across all SKUs at end of each period)
+    milp_inv = optimized_result["milp"]["inventory"]  # {(sku, ti): qty}, zeros omitted
+    milp_inventory_period = {p: 0.0 for p in periods}
+    for (sku, ti), qty in milp_inv.items():
+        milp_inventory_period[periods[ti]] += qty
+
     # Transport flows from optimized pipeline: {(plant, region): qty}
     opt_flows = optimized_result["transportation"]["flows"]
 
@@ -128,6 +134,7 @@ def main() -> None:
         "period_demand": period_demand,
         "milp_prod_period": milp_prod_period,
         "milp_prod_by_plant": milp_prod_by_plant,
+        "milp_inventory_period": milp_inventory_period,  # {period_label: total_inv}
 
         # DP diagnostic
         "dp_n_runs": dp_n_runs,
@@ -209,7 +216,7 @@ def main() -> None:
         print("\n  HARD MISMATCH on deterministic KPI — review before proceeding.")
         sys.exit(1)
 
-    print(f"\n  Cache written → {cache_path}")
+    print(f"\n  Cache written -> {cache_path}")
     print("=" * 70)
 
 
